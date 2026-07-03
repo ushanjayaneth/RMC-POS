@@ -4847,6 +4847,65 @@
       return raw;
     }
 
+    function open80mmPrintWindow(doc) {
+      const title = doc?.title || 'Receipt';
+      const body = doc?.html || `<pre>${esc(doc?.text || '')}</pre>`;
+      const w = window.open('', '_blank');
+      if (!w) {
+        toast('Please allow popups to print this receipt.', 'error');
+        return;
+      }
+      w.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${esc(title)}</title>
+  <style>
+    @page { size: 80mm auto; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; }
+    body { padding: 4mm; font-family: Arial, sans-serif; font-size: 11px; line-height: 1.32; }
+    .receipt80 { width: 72mm; max-width: 72mm; margin: 0 auto; color: #000; }
+    .receipt80-head { text-align: center; border-bottom: 1px dashed #111; padding-bottom: 6px; margin-bottom: 7px; }
+    .receipt80-shop { font-size: 15px; font-weight: 900; line-height: 1.2; word-break: break-word; }
+    .receipt80-title { margin-top: 3px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .4px; }
+    .receipt80-row, .receipt80-line { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+    .receipt80-row strong, .receipt80-line strong { text-align: right; }
+    .receipt80-items { border-top: 1px dashed #111; border-bottom: 1px dashed #111; padding: 5px 0; margin: 6px 0; }
+    .receipt80-item { padding: 3px 0; break-inside: avoid; page-break-inside: avoid; }
+    .receipt80-name { font-weight: 800; word-break: break-word; }
+    .receipt80-calc { display: flex; justify-content: space-between; gap: 8px; font-family: monospace; font-size: 10.5px; }
+    .receipt80-total { font-size: 13px; font-weight: 900; border-top: 1px dashed #111; margin-top: 5px; padding-top: 5px; }
+    .receipt80-note { margin-top: 7px; font-size: 10.5px; white-space: pre-wrap; word-break: break-word; }
+    .receipt80-foot { margin-top: 10px; text-align: center; border-top: 1px dashed #111; padding-top: 6px; font-size: 10px; }
+    pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace; }
+  </style>
+</head>
+<body>${body}</body>
+</html>`);
+      w.document.close();
+      setTimeout(() => {
+        w.focus();
+        w.print();
+      }, 250);
+    }
+
+    async function print80mmDoc(doc) {
+      const hasHardware = typeof HW !== 'undefined'
+        && ((HW.devs.receipt && HW.devs.receipt.status === 'connected')
+          || (HW.devs.bcPrint && HW.devs.bcPrint.status === 'connected'));
+      if (hasHardware && HW.printTextReceipt) {
+        try {
+          await HW.printTextReceipt(doc.text || '', doc.title || 'Receipt');
+          return;
+        } catch (e) {
+          console.error('80mm hardware print failed, using browser print', e);
+          toast('Hardware print failed. Opening browser print.', 'error');
+        }
+      }
+      open80mmPrintWindow(doc);
+    }
+
     // 100% Offline-only POS Config
     const S = {
       categories: [], items: [], sales: [],
@@ -5777,6 +5836,225 @@
         paySel.innerHTML = html;
       },
 
+      _money(value) {
+        return `${S.settings.currency || 'Rs.'} ${Number(value || 0).toFixed(2)}`;
+      },
+
+      _line(label, value, width = 42) {
+        const left = String(label || '');
+        const right = String(value || '');
+        const gap = width - left.length - right.length;
+        return gap > 1 ? left + ' '.repeat(gap) + right : `${left}\n${right}`;
+      },
+
+      _center(text, width = 42) {
+        const value = String(text || '');
+        if (value.length >= width) return value;
+        return ' '.repeat(Math.floor((width - value.length) / 2)) + value;
+      },
+
+      _wrap(text, width = 42) {
+        const words = String(text || '').split(/\s+/).filter(Boolean);
+        const lines = [];
+        let line = '';
+        words.forEach(word => {
+          if (word.length > width) {
+            if (line) {
+              lines.push(line);
+              line = '';
+            }
+            for (let i = 0; i < word.length; i += width) lines.push(word.slice(i, i + width));
+            return;
+          }
+          const next = line ? `${line} ${word}` : word;
+          if (next.length > width) {
+            lines.push(line);
+            line = word;
+          } else {
+            line = next;
+          }
+        });
+        if (line) lines.push(line);
+        return lines.length ? lines : [''];
+      },
+
+      _payMethodLabel(method) {
+        const labels = { cash: 'CASH', card: 'CARD', online: 'ONLINE' };
+        const key = String(method || 'cash').toLowerCase();
+        return labels[key] || key.toUpperCase();
+      },
+
+      _coconutTypeLabel(type) {
+        const labels = {
+          unhusked: 'Raw Coconuts',
+          husked: 'Peeled Coconuts',
+          husks: 'Coconut Husks',
+          shells: 'Coconut Shells',
+          copra: 'Copra',
+          oil: 'Coconut Oil',
+          poonac: 'Poonac'
+        };
+        return labels[type] || String(type || 'Coconut Item');
+      },
+
+      _buildCoconutPrintDoc({ title, idLabel, id, date, partyLabel, party, payMethod, rows, totals, notes, footer }) {
+        const shop = S.settings.shopName || 'Mr. Chicken House';
+        const lines = [
+          this._center(shop),
+          this._center(title),
+          '-'.repeat(42),
+          this._line(idLabel, id),
+          this._line('Date', date),
+          this._line(partyLabel, party),
+          this._line('Payment', this._payMethodLabel(payMethod)),
+          '-'.repeat(42)
+        ];
+        rows.forEach(row => {
+          this._wrap(row.name).forEach(part => lines.push(part));
+          lines.push(this._line(row.qtyText, row.amount));
+        });
+        lines.push('-'.repeat(42));
+        totals.forEach(row => lines.push(this._line(row.label, row.value)));
+        if (notes) {
+          lines.push('-'.repeat(42));
+          this._wrap(`Note: ${notes}`).forEach(part => lines.push(part));
+        }
+        lines.push('');
+        lines.push(this._center(footer || 'System Generated Voucher'));
+
+        const rowHtml = rows.map(row => `
+          <div class="receipt80-item">
+            <div class="receipt80-name">${esc(row.name)}</div>
+            <div class="receipt80-calc"><span>${esc(row.qtyText)}</span><strong>${esc(row.amount)}</strong></div>
+          </div>`).join('');
+        const totalHtml = totals.map(row => `
+          <div class="receipt80-line ${row.emphasis ? 'receipt80-total' : ''}">
+            <span>${esc(row.label)}</span><strong>${esc(row.value)}</strong>
+          </div>`).join('');
+
+        return {
+          title,
+          text: lines.join('\n'),
+          html: `<div class="receipt80">
+            <div class="receipt80-head">
+              <div class="receipt80-shop">${esc(shop)}</div>
+              <div class="receipt80-title">${esc(title)}</div>
+            </div>
+            <div class="receipt80-row"><span>${esc(idLabel)}</span><strong>${esc(id)}</strong></div>
+            <div class="receipt80-row"><span>Date</span><strong>${esc(date)}</strong></div>
+            <div class="receipt80-row"><span>${esc(partyLabel)}</span><strong>${esc(party)}</strong></div>
+            <div class="receipt80-row"><span>Payment</span><strong>${esc(this._payMethodLabel(payMethod))}</strong></div>
+            <div class="receipt80-items">${rowHtml}</div>
+            ${totalHtml}
+            ${notes ? `<div class="receipt80-note">Note: ${esc(notes)}</div>` : ''}
+            <div class="receipt80-foot">${esc(footer || 'System Generated Voucher')}</div>
+          </div>`
+        };
+      },
+
+      buildPurchasePrintDoc(p) {
+        const rows = [];
+        const largeCount = Number(p.largeCount || 0);
+        const largePrice = Number(p.largePrice || 0);
+        const smallCount = Number(p.smallCount || 0);
+        const smallPrice = Number(p.smallPrice || 0);
+        const transportCost = Number(p.transportCost || 0);
+        if (largeCount > 0) {
+          rows.push({
+            name: 'Large Coconuts',
+            qtyText: `${largeCount} x ${this._money(largePrice)}`,
+            amount: this._money(largeCount * largePrice)
+          });
+        }
+        if (smallCount > 0) {
+          rows.push({
+            name: 'Small Coconuts',
+            qtyText: `${smallCount} x ${this._money(smallPrice)}`,
+            amount: this._money(smallCount * smallPrice)
+          });
+        }
+        if (transportCost > 0) {
+          rows.push({
+            name: 'Transport Cost',
+            qtyText: '1 x ' + this._money(transportCost),
+            amount: this._money(transportCost)
+          });
+        }
+        return this._buildCoconutPrintDoc({
+          title: 'Coconut Purchase Voucher',
+          idLabel: 'Bill ID',
+          id: p.billId || p.id || '',
+          date: p.date || '',
+          partyLabel: 'Supplier',
+          party: p.estate || 'Supplier',
+          payMethod: p.payMethod,
+          rows,
+          totals: [
+            { label: 'TOTAL', value: this._money(p.total), emphasis: true },
+            { label: 'Paid from Drawer', value: this._money(p.paidDrawer || 0) }
+          ],
+          notes: p.notes || '',
+          footer: 'ShoppingLK POS'
+        });
+      },
+
+      buildSalePrintDoc(s) {
+        const rows = [];
+        const transportCost = Number(s.transportCost || 0);
+        if (s.type === 'unhusked' || s.type === 'husked') {
+          const typeName = this._coconutTypeLabel(s.type);
+          const largeCount = Number(s.largeCount || 0);
+          const largePrice = Number(s.largePrice || 0);
+          const smallCount = Number(s.smallCount || 0);
+          const smallPrice = Number(s.smallPrice || 0);
+          if (largeCount > 0) {
+            rows.push({
+              name: `${typeName} - Large`,
+              qtyText: `${largeCount} x ${this._money(largePrice)}`,
+              amount: this._money(largeCount * largePrice)
+            });
+          }
+          if (smallCount > 0) {
+            rows.push({
+              name: `${typeName} - Small`,
+              qtyText: `${smallCount} x ${this._money(smallPrice)}`,
+              amount: this._money(smallCount * smallPrice)
+            });
+          }
+        } else {
+          const qty = Number(s.qty || 0);
+          const price = Number(s.price || 0);
+          rows.push({
+            name: this._coconutTypeLabel(s.type),
+            qtyText: `${qty} x ${this._money(price)}`,
+            amount: this._money(s.total)
+          });
+        }
+        if (transportCost > 0) {
+          rows.push({
+            name: 'Transport Cost (paid by us)',
+            qtyText: '1 x ' + this._money(transportCost),
+            amount: this._money(transportCost)
+          });
+        }
+        return this._buildCoconutPrintDoc({
+          title: 'Coconut Wholesale Invoice',
+          idLabel: 'Invoice ID',
+          id: s.billId || s.id || '',
+          date: s.date || '',
+          partyLabel: 'Customer',
+          party: s.buyer || 'Wholesale Buyer',
+          payMethod: s.payMethod,
+          rows,
+          totals: [
+            { label: 'TOTAL', value: this._money(s.total), emphasis: true },
+            { label: 'Received to Drawer', value: this._money(s.recDrawer || 0) }
+          ],
+          notes: s.notes || '',
+          footer: 'Thank You! Come Again.'
+        });
+      },
+
       async savePurchase() {
         const date = document.getElementById('ccBuyDate').value;
         const estate = document.getElementById('ccBuyEstate').value.trim();
@@ -5844,10 +6122,12 @@
         this.renderBuyList();
       },
 
-      printPurchaseBill(id) {
+      async printPurchaseBill(id) {
         const p = S.coconut_purchases.find(x => x.id === id);
         if (!p) { toast('Purchase record not found', 'error'); return; }
-        
+        await print80mmDoc(this.buildPurchasePrintDoc(p));
+        return;
+
         const cur = S.settings.currency || 'Rs.';
         const w = window.open('', '_blank');
         w.document.write(`<!DOCTYPE html>
@@ -6206,10 +6486,12 @@
         this.renderSaleList();
       },
 
-      printSaleBill(id) {
+      async printSaleBill(id) {
         const s = S.coconut_sales.find(x => x.id === id);
         if (!s) { toast('Sales record not found', 'error'); return; }
-        
+        await print80mmDoc(this.buildSalePrintDoc(s));
+        return;
+
         const cur = S.settings.currency || 'Rs.';
         const w = window.open('', '_blank');
         
@@ -7399,8 +7681,114 @@
         this.render();
       },
 
-      print() {
+      async print() {
         const d = document.getElementById('dayendDate')?.value || new Date().toISOString().split('T')[0];
+        const cur = S.settings.currency || 'Rs.';
+        const money = value => `${cur} ${Number(value || 0).toFixed(2)}`;
+        const line = (label, value) => {
+          const left = String(label || '');
+          const right = String(value || '');
+          const gap = 42 - left.length - right.length;
+          return gap > 1 ? left + ' '.repeat(gap) + right : `${left}\n${right}`;
+        };
+        const center = text => {
+          const value = String(text || '');
+          if (value.length >= 42) return value;
+          return ' '.repeat(Math.floor((42 - value.length) / 2)) + value;
+        };
+        const divider = '-'.repeat(42);
+
+        const daySales = S.sales.filter(s => s.date && s.date.startsWith(d));
+        const dayMovements = S.cash_movements.filter(m => m.date && m.date.startsWith(d));
+        const posCashIn = daySales.filter(s => s.status !== 'returned' && s.payMethod === 'cash').reduce((a, s) => a + (s.total || 0), 0);
+        const posCardIn = daySales.filter(s => s.status !== 'returned' && s.payMethod === 'card').reduce((a, s) => a + (s.total || 0), 0);
+        const posOnlineIn = daySales.filter(s => s.status !== 'returned' && s.payMethod === 'online').reduce((a, s) => a + (s.total || 0), 0);
+        const totalRev = daySales.reduce((a, s) => a + (s.total || 0), 0);
+        const totalItems = daySales.reduce((a, s) => a + (s.items || []).length, 0);
+
+        let loanPaymentsIn = 0;
+        S.loans.forEach(loan => {
+          (loan.paymentHistory || []).forEach(pay => {
+            if (pay.date && pay.date.startsWith(d)) loanPaymentsIn += (pay.amount || 0);
+          });
+        });
+
+        const manualCashIn = dayMovements.filter(m => m.type === 'in' && m.source === 'manual').reduce((a, m) => a + (m.amount || 0), 0);
+        const manualCashOut = dayMovements.filter(m => m.type === 'out' && m.source === 'manual').reduce((a, m) => a + (m.amount || 0), 0);
+        const openingFloat = S.settings.openingFloats?.[d] || 0;
+        const posExpected = openingFloat + posCashIn + loanPaymentsIn + manualCashIn - manualCashOut;
+
+        const ccPurchases = S.coconut_purchases.filter(p => p.date === d);
+        const ccHusking = S.coconut_husking.filter(h => h.date === d);
+        const ccSales = S.coconut_sales.filter(s => s.date === d);
+        const ccCopra = S.coconut_copra.filter(c => c.date === d);
+        const ccOil = S.coconut_oil.filter(o => o.date === d);
+        const ccWorkerPay = S.coconut_worker_payments.filter(p => p.date === d);
+        const ccExpenses = dayMovements.filter(m => m.source === 'coconut_expense').reduce((a, m) => a + (m.amount || 0), 0);
+        const ccDrawerIn = dayMovements.filter(m => m.source === 'coconut_drawer_in').reduce((a, m) => a + (m.amount || 0), 0);
+        const ccDrawerOut = dayMovements.filter(m => m.source === 'coconut_drawer_out').reduce((a, m) => a + (m.amount || 0), 0);
+        const ccPurchaseTotal = ccPurchases.reduce((a, p) => a + (p.total || 0), 0);
+        const ccPurchasePaid = ccPurchases.reduce((a, p) => a + (p.paidDrawer || 0), 0);
+        const ccSalesTotal = ccSales.reduce((a, s) => a + (s.total || 0), 0);
+        const ccSalesReceived = ccSales.reduce((a, s) => a + (s.recDrawer || 0), 0);
+        const ccTransportPaid = ccSales.reduce((a, s) => a + (s.transportPaidDrawer || 0), 0);
+        const ccHuskingPaid = ccHusking.reduce((a, h) => a + (h.paidDrawer || 0), 0);
+        const ccCopraPaid = ccCopra.reduce((a, c) => a + (c.paidDrawer || 0), 0);
+        const ccOilPaid = ccOil.reduce((a, o) => a + (o.paidDrawer || 0), 0);
+        const ccWorkerPaid = ccWorkerPay.reduce((a, p) => a + (p.paidDrawer || 0), 0);
+        const ccOpeningFloat = S.settings.coconutOpeningFloats?.[d] || 0;
+        const ccExpected = ccOpeningFloat + ccSalesReceived + ccDrawerIn
+          - ccPurchasePaid - ccHuskingPaid - ccCopraPaid - ccOilPaid - ccWorkerPaid
+          - ccTransportPaid - ccExpenses - ccDrawerOut;
+        const ccPurchasedNuts = ccPurchases.reduce((a, p) => a + (Number(p.largeCount || 0) + Number(p.smallCount || 0)), 0);
+        const ccSoldNuts = ccSales
+          .filter(s => s.type === 'unhusked' || s.type === 'husked')
+          .reduce((a, s) => a + (Number(s.largeCount || 0) + Number(s.smallCount || 0) || Number(s.qty || 0)), 0);
+
+        const lines = [
+          center(S.settings.shopName || 'Mr. Chicken House'),
+          center('Day-End Summary'),
+          center(d),
+          divider,
+          'POS SALES',
+          line('Bills', daySales.length),
+          line('Items Sold', totalItems),
+          line('Total Sales', money(totalRev)),
+          line('Cash Sales', money(posCashIn)),
+          line('Card Sales', money(posCardIn)),
+          line('Online Sales', money(posOnlineIn)),
+          line('Loan Payments', money(loanPaymentsIn)),
+          line('Opening Float', money(openingFloat)),
+          line('Manual Cash In', money(manualCashIn)),
+          line('Manual Cash Out', money(manualCashOut)),
+          line('Expected Drawer', money(posExpected)),
+          divider,
+          'COCONUT BUSINESS',
+          line('Purchase Bills', ccPurchases.length),
+          line('Purchased Nuts', ccPurchasedNuts),
+          line('Purchase Total', money(ccPurchaseTotal)),
+          line('Paid from Drawer', money(ccPurchasePaid)),
+          line('Sales Bills', ccSales.length),
+          line('Sold Nuts', ccSoldNuts),
+          line('Sales Total', money(ccSalesTotal)),
+          line('Received Drawer', money(ccSalesReceived)),
+          line('Husking Paid', money(ccHuskingPaid)),
+          line('Copra Paid', money(ccCopraPaid)),
+          line('Oil Paid', money(ccOilPaid)),
+          line('Worker Payments', money(ccWorkerPaid)),
+          line('Sale Transport', money(ccTransportPaid)),
+          line('Expenses', money(ccExpenses)),
+          line('Drawer Deposit', money(ccDrawerIn)),
+          line('Drawer Withdraw', money(ccDrawerOut)),
+          line('Opening Float', money(ccOpeningFloat)),
+          line('Expected Drawer', money(ccExpected)),
+          divider,
+          center('System Generated Report')
+        ];
+
+        await print80mmDoc({ title: `Day End - ${d}`, text: lines.join('\n') });
+        return;
+
         const w = window.open('', '_blank');
         const inner = document.getElementById('dayendTab')?.querySelector('[style*="overflow-y"]')?.innerHTML || '';
         w.document.write(`<!DOCTYPE html><html><head><title>Day End - ${d}</title>
@@ -9653,6 +10041,52 @@ window.onload=function(){
             throw new Error('LAN Print Failed: Make sure printer is reachable.');
           }
         }
+      },
+
+      async printTextReceipt(text, title = 'Receipt') {
+        const cleanText = ReceiptFormatter.ascii(String(text || '')).trimEnd() + '\n\n';
+        const enc = new TextEncoder();
+
+        if (this.devs.bcPrint && this.devs.bcPrint.status === 'connected') {
+          let y = 12;
+          let tspl = '';
+          const clean = value => ReceiptFormatter.ascii(value).replace(/"/g, '\\"');
+          cleanText.split('\n').forEach(line => {
+            if (!line.trim()) {
+              y += 18;
+              return;
+            }
+            tspl += `TEXT 14,${y},"2",0,1,1,"${clean(line)}"\r\n`;
+            y += 23;
+          });
+          const heightMM = Math.max(35, Math.ceil((y + 20) / 8));
+          const header = `SIZE 80 mm, ${heightMM} mm\r\nGAP 0 mm, 0 mm\r\nDIRECTION 0\r\nCLS\r\n`;
+          await this.writeChunk('bcPrint', enc.encode(header + tspl + `PRINT 1,1\r\n`));
+          toast(`${title} printed`, 'success');
+          return;
+        }
+
+        if (this.devs.receipt.status !== 'connected') {
+          throw new Error('Receipt Printer not connected');
+        }
+
+        const ESC = 0x1B;
+        const LF = 0x0A;
+        const GS = 0x1D;
+        const init = new Uint8Array([ESC, 0x40]);
+        const alignLeft = new Uint8Array([ESC, 0x61, 0]);
+        const bodyBytes = enc.encode(cleanText);
+        const cut = new Uint8Array([LF, LF, LF, LF, GS, 0x56, 0x00]);
+        const parts = [init, alignLeft, bodyBytes, cut];
+        const totalLen = parts.reduce((a, p) => a + p.length, 0);
+        const full = new Uint8Array(totalLen);
+        let offset = 0;
+        parts.forEach(p => {
+          full.set(p, offset);
+          offset += p.length;
+        });
+        await this.writeChunk('receipt', full);
+        toast(`${title} printed`, 'success');
       },
 
       async printReceipt(sale) {
